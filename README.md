@@ -175,17 +175,104 @@ docker compose -f docker/compose.yaml run --rm correlacao jar \
 - `docker/.dockerignore`: mantém os arquivos de código e os dados fora do
   contexto usado para construir a imagem.
 
-## Executar sem Docker
+## Executar com Hadoop instalado na máquina (sem Docker)
 
-Para rodar a versão local de referência (não executa o Hadoop):
+Esta opção executa o mesmo job Hadoop Streaming diretamente no computador. São
+necessários Hadoop com o JAR de Streaming, Java e Python 3. Execute os comandos
+na raiz do projeto — a pasta que contém `mapper.py`, `reducer.py` e
+`forestfireinput.csv`.
+
+Primeiro, confirme que Hadoop e Python estão disponíveis:
+
+```sh
+hadoop version
+python3 --version
+```
+
+Localize o JAR do Hadoop Streaming que corresponde à versão instalada. Por
+exemplo, com Hadoop 3.4.1 e `HADOOP_HOME` configurado:
+
+```sh
+export STREAMING_JAR="$HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.4.1.jar"
+test -f "$STREAMING_JAR" && echo "Streaming JAR encontrado: $STREAMING_JAR"
+```
+
+Em macOS com Hadoop instalado pelo Homebrew, o caminho do Hadoop normalmente
+pode ser definido assim:
+
+```sh
+export HADOOP_HOME="$(brew --prefix hadoop)/libexec"
+export STREAMING_JAR="$HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-3.4.1.jar"
+```
+
+Se sua versão ou local de instalação for diferente, ajuste o caminho do JAR.
+Depois, inicie o job em modo local (MapReduce executado por Hadoop nesta
+máquina, sem cluster ou HDFS):
+
+```sh
+hadoop jar "$STREAMING_JAR" \
+  -D mapreduce.framework.name=local \
+  -D mapreduce.job.reduces=2 \
+  -files mapper.py,reducer.py \
+  -input forestfireinput.csv \
+  -output saida-correlacao \
+  -mapper "python3 mapper.py" \
+  -combiner "python3 reducer.py --combine" \
+  -reducer "python3 reducer.py"
+```
+
+O Hadoop envia os scripts para as tarefas via `-files`, executa o Mapper,
+Combiner e Reducers, e grava os resultados em `saida-correlacao/part-*`.
+Confira o sucesso no log (`Job ... completed successfully`) e leia os
+resultados:
+
+```sh
+cat saida-correlacao/part-*
+```
+
+O diretório de saída precisa ainda não existir. Para executar novamente,
+renomeie os resultados anteriores ou escolha outro valor para `-output`.
+
+### Executar em cluster Hadoop com HDFS
+
+Para usar um cluster, ele precisa estar iniciado e o usuário precisa ter
+acesso ao HDFS. Envie o CSV para o HDFS:
+
+```sh
+hdfs dfs -mkdir -p /user/$USER/correlacao/input
+hdfs dfs -put forestfireinput.csv /user/$USER/correlacao/input/
+```
+
+Execute o job sem a configuração de modo local e com caminhos HDFS:
+
+```sh
+hadoop jar "$STREAMING_JAR" \
+  -D mapreduce.job.reduces=2 \
+  -files mapper.py,reducer.py \
+  -input /user/$USER/correlacao/input/forestfireinput.csv \
+  -output /user/$USER/correlacao/output \
+  -mapper "python3 mapper.py" \
+  -combiner "python3 reducer.py --combine" \
+  -reducer "python3 reducer.py"
+```
+
+Consulte a saída do cluster com:
+
+```sh
+hdfs dfs -cat /user/$USER/correlacao/output/part-*
+```
+
+Os nós que executam as tarefas precisam ter Python 3 disponível. No Windows,
+para executar Hadoop diretamente, recomenda-se usar uma distribuição Linux via
+WSL; a opção Docker descrita acima evita configurar Hadoop e Java no Windows.
+
+## Executar a versão Python local
+
+Para rodar a versão de referência sem Hadoop:
 
 ```sh
 python3 executar.py forestfireinput.csv
 ```
 
 Esse script usa Mapper/Combiner/Reducer em Python, mas mantém e agrupa os
-registros na memória do processo local. Para Hadoop Streaming sem Docker,
-instale Python 3, Java e Hadoop com o JAR de Streaming. O job pode rodar em
-modo local ou em cluster; no cluster, configure o HDFS, use os caminhos HDFS
-em `-input` e `-output` e remova `-D mapreduce.framework.name=local`. Em ambos
-os casos, o caminho de saída precisa apontar para um diretório inexistente.
+registros na memória do processo local; ele não inicia um job Hadoop.
