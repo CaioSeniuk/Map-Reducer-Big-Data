@@ -96,7 +96,10 @@ r = (n × Σxy − Σx × Σy)
 ## Executar com Docker
 
 Instale e inicie o Docker Desktop (Windows/macOS) ou Docker Engine e Docker
-Compose (Linux). Na raiz do projeto — a pasta que contém `mapper.py`,
+Compose (Linux). No Windows 10/11, habilite o WSL2 e use o Docker Desktop
+em modo de contêineres Linux. A imagem atende computadores Intel/AMD
+(`linux/amd64`) e ARM (`linux/arm64`); o Docker seleciona a arquitetura
+automaticamente. Na raiz do projeto — a pasta que contém `mapper.py`,
 `reducer.py`, `forestfireinput.csv` e a pasta `docker/` — execute:
 
 ```sh
@@ -141,6 +144,40 @@ docker compose -f docker/compose.yaml run --rm correlacao
 O aviso `Unable to load native-hadoop library` pode aparecer em macOS e não
 impede a execução: as bibliotecas Java padrão são usadas como alternativa.
 
+### Erro de arquitetura da imagem (`exec format error`)
+
+Se o Docker informar que a imagem é `linux/arm64`, mas o computador é
+`linux/amd64`, a imagem baixada não é compatível com a arquitetura do
+computador. Isso pode ocorrer quando a imagem foi publicada a partir de um
+Mac com Apple Silicon sem incluir a versão AMD64.
+
+Para construir a imagem localmente para a arquitetura do computador e
+executar o job, use os mesmos comandos no PowerShell, macOS ou Linux:
+
+```sh
+docker compose -f docker/compose.yaml build --pull correlacao
+docker compose -f docker/compose.yaml run --rm --pull never correlacao
+```
+
+A construção baixa Python, Java e Hadoop e pode levar alguns minutos.
+`--pull never` no segundo comando mantém a imagem construída localmente em
+vez de baixar novamente a imagem incompatível. Não é necessário alterar o
+Dockerfile nem fixar `platform: linux/arm64` no Compose.
+
+Para quem mantém a imagem publicada, a solução é publicar a tag para as
+duas arquiteturas. Com acesso de escrita ao repositório no Docker Hub e um
+builder Buildx com suporte a ambas as plataformas, execute na raiz do projeto:
+
+```sh
+docker login
+docker buildx create --name correlacao-multiarch --driver docker-container
+docker buildx build --builder correlacao-multiarch --platform linux/amd64,linux/arm64 -t caiohseniuk/projeto-big-data-hadoop:v01 --push docker
+```
+
+Se o builder `correlacao-multiarch` já existir, pule o comando de criação.
+Após a publicação multi-arquitetura, o `docker pull` seleciona a variante
+compatível com cada computador.
+
 ### Usar outro arquivo CSV
 
 Coloque o arquivo CSV na raiz do projeto e passe o caminho dentro de
@@ -170,10 +207,171 @@ docker compose -f docker/compose.yaml run --rm correlacao jar \
 - `executar.py`: versão local de referência, sem Hadoop; simula as etapas
   agrupando os dados em memória.
 - `docker/Dockerfile`: define a imagem com Python, Java e Hadoop.
-- `docker/compose.yaml`: seleciona a imagem publicada, monta o projeto em
-  `/workspace` e configura o job Hadoop Streaming.
+- `docker/compose.yaml`: seleciona a imagem publicada ou permite construí-la
+  localmente, monta o projeto em `/workspace` e configura o job Hadoop
+  Streaming.
 - `docker/.dockerignore`: mantém os arquivos de código e os dados fora do
   contexto usado para construir a imagem.
+
+## Simular um cluster Hadoop no computador
+
+O arquivo `docker/compose.cluster.yaml` cria um cluster separado do modo
+local anterior, com HDFS e YARN:
+
+```text
+Docker no seu computador
+  namenode          -> metadados do HDFS
+  resourcemanager   -> agendamento das tarefas pelo YARN
+  worker1           -> DataNode + NodeManager
+  worker2           -> DataNode + NodeManager
+  cliente           -> envio do CSV, submissão do job e leitura dos resultados
+```
+
+Os workers são nós lógicos, não computadores físicos. O Hadoop distribui
+dados e tarefas entre os contêineres, mas todos compartilham CPU, memória e
+disco do computador. Não há ganho de hardware em relação a uma única máquina.
+O agendador decide onde cada tarefa roda; não há afinidade fixa entre uma
+divisão de entrada e um worker.
+
+### Requisitos e inicialização
+
+Use Docker Compose v2 com suporte a `up --wait`. No Docker Desktop, reserve
+preferencialmente **8 GB de RAM e 4 CPUs** para o Docker. O cluster limita
+cada coordenador a 1 GB e cada worker a 2 GB; o cliente pode usar mais 1 GB.
+No Windows 10/11, use WSL2 e contêineres Linux. Execute os comandos abaixo
+na raiz do projeto; funcionam também no PowerShell.
+
+Primeiro, obtenha a imagem:
+
+```sh
+docker pull caiohseniuk/projeto-big-data-hadoop:v01
+```
+
+Se preferir construir a imagem localmente:
+
+```sh
+docker compose -f docker/compose.cluster.yaml build --pull cliente
+```
+
+Inicie os quatro serviços permanentes e aguarde seus healthchecks:
+
+```sh
+docker compose -f docker/compose.cluster.yaml up -d --wait
+docker compose -f docker/compose.cluster.yaml ps
+```
+
+O cliente tem um profile separado: só é iniciado quando solicitado
+explicitamente. O NameNode é formatado apenas quando seu volume ainda não
+tem metadados. O HDFS usa replicação 2, guardando uma cópia em cada DataNode.
+As opções de memória do YARN deixam espaço nos workers para os serviços
+Java; a abertura do módulo `java.lang` permite usar os componentes Hadoop
+3.4.1 com Java 17.
+
+### Executar e obter os resultados
+
+```sh
+docker compose -f docker/compose.cluster.yaml run --rm cliente
+```
+
+O cliente espera até 120 segundos por dois DataNodes e dois NodeManagers
+registrados e pelo HDFS fora do modo de segurança. Depois envia o CSV para
+`/dados/correlacao/input/forestfireinput.csv` no HDFS e submete o job ao YARN.
+Os scripts Python são enviados por `-files`; não precisam estar montados nos
+workers.
+
+Para demonstrar vários Mappers com este CSV pequeno, apenas o job do cluster
+usa `NLineInputFormat`, com **130 linhas por divisão de entrada**. O CSV atual
+de 517 linhas gera quatro divisões e dois reducers. Isso é didático: para
+dados grandes, normalmente usam-se divisões maiores e o formato padrão
+`TextInputFormat`. O agendador pode executar tarefas em paralelo ou em
+sequência, conforme os recursos livres. A opção `stream.map.input.ignoreKey`
+evita enviar o deslocamento da linha como parte do CSV ao Mapper.
+
+Leia os resultados no HDFS:
+
+```sh
+docker compose -f docker/compose.cluster.yaml run --rm cliente results
+```
+
+Exporte-os para `saida-correlacao-cluster/` no computador:
+
+```sh
+docker compose -f docker/compose.cluster.yaml run --rm cliente export
+```
+
+A exportação recusa sobrescrever uma pasta local existente. Os resultados
+do modo local original em `saida-correlacao/` não são alterados.
+
+### Acompanhar o cluster
+
+| Endereço | O que mostra |
+|---|---|
+| `http://localhost:9870` | HDFS, dois DataNodes e arquivos armazenados |
+| `http://localhost:8088` | YARN, dois NodeManagers e aplicações submetidas |
+
+Enquanto o job estiver rodando, a página da aplicação no YARN permite
+acompanhar o ApplicationMaster. Este exemplo não inclui JobHistoryServer:
+o acompanhamento detalhado dessa página pode deixar de estar disponível
+depois que o ApplicationMaster termina.
+
+Confira os nós e a replicação pela linha de comando:
+
+```sh
+docker compose -f docker/compose.cluster.yaml exec namenode hdfs dfsadmin -report
+docker compose -f docker/compose.cluster.yaml exec resourcemanager yarn node -list
+docker compose -f docker/compose.cluster.yaml exec namenode hdfs fsck /dados/correlacao/input -files -blocks -locations
+```
+
+Veja os logs se algum serviço não ficar saudável ou o job falhar:
+
+```sh
+docker compose -f docker/compose.cluster.yaml logs --tail 100
+docker compose -f docker/compose.cluster.yaml logs --tail 100 worker1 worker2
+```
+
+Os logs das tarefas ficam em `/data/yarn/logs` no volume de cada worker.
+Os arquivos de trabalho são mantidos por dez minutos depois do fim das
+tarefas para ajudar no diagnóstico.
+
+Com o cluster ativo e o job concluído, um teste de integração compara as
+dez linhas do HDFS com o pipeline Python de referência e verifica que uma
+nova execução não sobrescreve a saída. Para executá-lo, com Python 3
+instalado no computador:
+
+```sh
+python3 -m unittest discover -s tests -p "test_cluster.py"
+```
+
+No Windows, use `py` no lugar de `python3`.
+
+### Executar novamente e parar
+
+A saída `/dados/correlacao/output` não pode existir antes de um novo job.
+Para preservá-la e executar novamente:
+
+```sh
+docker compose -f docker/compose.cluster.yaml exec namenode hdfs dfs -mv /dados/correlacao/output /dados/correlacao/output-anterior
+docker compose -f docker/compose.cluster.yaml run --rm cliente
+```
+
+Escolha outro nome se `output-anterior` já existir. Para exportar novamente,
+renomeie também a pasta local `saida-correlacao-cluster` antes da exportação.
+
+Pare e remova os contêineres, preservando os volumes e os dados:
+
+```sh
+docker compose -f docker/compose.cluster.yaml down
+```
+
+Para **apagar todo o HDFS e os logs deste cluster**, use
+`docker compose -f docker/compose.cluster.yaml down -v`. Na próxima
+inicialização, um novo HDFS será criado. As pastas já exportadas para o
+computador não são apagadas.
+
+Este cluster é exclusivamente didático: não tem autenticação, alta
+disponibilidade ou proteção para produção. As interfaces web são publicadas
+somente em `127.0.0.1`, e as portas internas ficam na rede Docker. Não exponha
+esses serviços na internet ou em uma rede não confiável.
 
 ## Executar com Hadoop instalado na máquina (sem Docker)
 

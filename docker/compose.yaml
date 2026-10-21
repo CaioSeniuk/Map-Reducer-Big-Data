@@ -1,6 +1,9 @@
 services:
   correlacao:
     image: caiohseniuk/projeto-big-data-hadoop:v01
+    build:
+      context: .
+      dockerfile: Dockerfile
     volumes:
       - ..:/workspace
     command:
