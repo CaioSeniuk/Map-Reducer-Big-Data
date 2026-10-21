@@ -1,0 +1,24 @@
+services:
+  correlacao:
+    image: caiohseniuk/projeto-big-data-hadoop:v01
+    volumes:
+      - ..:/workspace
+    command:
+      - jar
+      - /opt/hadoop/share/hadoop/tools/lib/hadoop-streaming-3.4.1.jar
+      - -D
+      - mapreduce.framework.name=local
+      - -D
+      - mapreduce.job.reduces=2
+      - -files
+      - mapper.py,reducer.py
+      - -input
+      - /workspace/forestfireinput.csv
+      - -output
+      - /workspace/saida-correlacao
+      - -mapper
+      - python3 mapper.py
+      - -combiner
+      - python3 reducer.py --combine
+      - -reducer
+      - python3 reducer.py

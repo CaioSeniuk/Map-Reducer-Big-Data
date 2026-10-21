@@ -3,9 +3,10 @@ import sys
 from collections import defaultdict
 
 from mapper import COLUNAS, mapear
-from reducer import combinar, reduzir
+from reducer import classificar_correlacao, combinar, explicar_correlacao, reduzir
 
 
+# Traduz as chaves internas para nomes legíveis no relatório da análise local.
 nomes_portugues = {
     "X": "Posição horizontal",
     "Y": "Posição vertical",
@@ -20,51 +21,19 @@ nomes_portugues = {
 }
 
 
-def classificar_correlacao(r):
-    # Verifica a intensidade da correlação
-    intensidade = abs(r)
-
-    if intensidade < 0.10:
-        return "Muito fraca"
-    elif intensidade < 0.30:
-        nivel = "fraca"
-    elif intensidade < 0.70:
-        nivel = "moderada"
-    else:
-        nivel = "forte"
-
-    # Verifica a direção da correlação
-    if r > 0:
-        return "Positiva " + nivel
-    else:
-        return "Negativa " + nivel
-
-
-def explicar_correlacao(r):
-    # Explica o significado do resultado
-    intensidade = abs(r)
-
-    if intensidade < 0.10:
-        return "Não apresenta relação linear significativa em intensidade."
-
-    if r > 0:
-        return "Quando a temperatura aumenta, esta variável tende a aumentar."
-    else:
-        return "Quando a temperatura aumenta, esta variável tende a diminuir."
-
-
 def main(caminho):
+    """Executa localmente as fases Map, Shuffle, Combiner e Reduce."""
     grupos = defaultdict(list)
     linhas_validas = 0
 
-    # Lê todas as instâncias do CSV
+    # Lê o CSV, conta as linhas com estrutura esperada e agrupa por variável
+    # as estatísticas parciais produzidas pelo Mapper.
     with open(caminho, newline="", encoding="utf-8-sig") as arquivo:
         for linha in csv.reader(arquivo):
 
             if len(linha) == 13:
                 linhas_validas += 1
 
-            # Mapper: gera dados para cada comparação
             for coluna, estatisticas in mapear(linha):
                 grupos[coluna].append(estatisticas)
 
@@ -73,7 +42,8 @@ def main(caminho):
     print("=" * 75)
     print(f"Total de instâncias com 13 colunas: {linhas_validas}")
 
-    # Processa cada coluna numérica
+    # Para cada variável, simula Combiner em lotes, calcula a correlação final
+    # e imprime a contagem, o coeficiente e sua interpretação.
     for coluna in COLUNAS.values():
 
         registros = grupos[coluna]
@@ -87,13 +57,11 @@ def main(caminho):
             print("Correlação: indefinida")
             continue
 
-        # Combiner: agrega os dados em lotes de até 100
         parciais = [
             combinar(registros[i:i + 100])
             for i in range(0, len(registros), 100)
         ]
 
-        # Reducer: reúne os dados e calcula Pearson
         n, correlacao = reduzir(parciais)
 
         print(f"Instâncias comparadas: {n}")
@@ -111,13 +79,10 @@ def main(caminho):
     print("=" * 75)
 
 
-# Início da execução do programa
 if __name__ == "__main__":
-
+    # Exige exatamente um caminho para o arquivo CSV de entrada.
     if len(sys.argv) != 2:
         print("Uso: py executar.py forestfireinput.csv")
         sys.exit(1)
 
     main(sys.argv[1])
-
-# py executar.py forestfireinput.csv
