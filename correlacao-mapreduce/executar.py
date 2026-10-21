@@ -6,6 +6,7 @@ from mapper import COLUNAS, mapear
 from reducer import combinar, reduzir
 
 
+# Traduz as chaves do Mapper para os nomes apresentados no relatório.
 nomes_portugues = {
     "X": "Posição horizontal",
     "Y": "Posição vertical",
@@ -21,7 +22,7 @@ nomes_portugues = {
 
 
 def classificar_correlacao(r):
-    # Verifica a intensidade da correlação
+    # Classifica a intensidade pelo valor absoluto, independentemente do sinal.
     intensidade = abs(r)
 
     if intensidade < 0.10:
@@ -33,7 +34,7 @@ def classificar_correlacao(r):
     else:
         nivel = "forte"
 
-    # Verifica a direção da correlação
+    # Acrescenta a direção da associação às classes acima de "Muito fraca".
     if r > 0:
         return "Positiva " + nivel
     else:
@@ -41,7 +42,8 @@ def classificar_correlacao(r):
 
 
 def explicar_correlacao(r):
-    # Explica o significado do resultado
+    # Produz a interpretação textual conforme intensidade e direção.
+    # Essa descrição não corresponde a um teste de significância estatística.
     intensidade = abs(r)
 
     if intensidade < 0.10:
@@ -54,26 +56,30 @@ def explicar_correlacao(r):
 
 
 def main(caminho):
+    # A execução local guarda as estatísticas de todas as variáveis em memória
+    # para simular o agrupamento por chave das etapas MapReduce.
     grupos = defaultdict(list)
     linhas_validas = 0
 
-    # Lê todas as instâncias do CSV
+    # Lê o CSV e conta as linhas com 13 campos, mesmo se houver valores inválidos.
+    # O Mapper faz a validação numérica e seus pares são agrupados por variável.
     with open(caminho, newline="", encoding="utf-8-sig") as arquivo:
         for linha in csv.reader(arquivo):
 
             if len(linha) == 13:
                 linhas_validas += 1
 
-            # Mapper: gera dados para cada comparação
             for coluna, estatisticas in mapear(linha):
                 grupos[coluna].append(estatisticas)
 
+    # Apresenta o total estrutural antes dos resultados de cada comparação.
     print("\n" + "=" * 75)
     print("ANÁLISE DE CORRELAÇÃO COM A TEMPERATURA")
     print("=" * 75)
     print(f"Total de instâncias com 13 colunas: {linhas_validas}")
 
-    # Processa cada coluna numérica
+    # Percorre as variáveis na ordem definida pelo Mapper e apresenta também
+    # as comparações sem registros, cujo coeficiente é indefinido.
     for coluna in COLUNAS.values():
 
         registros = grupos[coluna]
@@ -87,17 +93,19 @@ def main(caminho):
             print("Correlação: indefinida")
             continue
 
-        # Combiner: agrega os dados em lotes de até 100
+        # Simula o Combiner em lotes de até 100; o Reducer soma esses parciais
+        # e calcula Pearson sobre o conjunto completo, não sobre médias de lotes.
         parciais = [
             combinar(registros[i:i + 100])
             for i in range(0, len(registros), 100)
         ]
 
-        # Reducer: reúne os dados e calcula Pearson
         n, correlacao = reduzir(parciais)
 
         print(f"Instâncias comparadas: {n}")
 
+        # Distingue correlação indefinida de coeficiente calculado e formata
+        # classificação e interpretação para o relatório.
         if correlacao is None:
             print("Correlação: indefinida")
             print("Significado: Não foi possível calcular a correlação.")
@@ -111,7 +119,7 @@ def main(caminho):
     print("=" * 75)
 
 
-# Início da execução do programa
+# Exige um único caminho de entrada antes de iniciar a execução local.
 if __name__ == "__main__":
 
     if len(sys.argv) != 2:
